@@ -60,7 +60,7 @@ namespace BeetleX.Buffers
 
         public bool AsyncDataStatus { get; set; }
 
-        public async void SyncData()
+        public async void SyncData(Action receive)
         {
             while (true)
             {
@@ -78,6 +78,7 @@ namespace BeetleX.Buffers
                     else
                     {
                         buffer.Free();
+                        SyncDataError = new BXException("ssl receive null data!");
                         break;
                     }
 
@@ -87,6 +88,11 @@ namespace BeetleX.Buffers
                     SyncDataError = e_;
                     buffer?.Free();
                     break;
+                }
+                finally
+                {
+                   receive?.Invoke();
+
                 }
             }
         }

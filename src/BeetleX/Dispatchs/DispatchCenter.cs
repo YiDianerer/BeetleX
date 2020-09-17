@@ -59,6 +59,18 @@ namespace BeetleX.Dispatchs
             }
         }
 
+        public int Count
+        {
+            get
+            {
+                int count = 0;
+                foreach (var item in mDispatchers)
+                    count += item.Count;
+                return count;
+            }
+        }
+
+
         public SingleThreadDispatcher<T> Get(object data)
         {
             int id = Math.Abs(data.GetHashCode());

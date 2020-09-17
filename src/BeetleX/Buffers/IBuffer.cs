@@ -50,11 +50,8 @@ namespace BeetleX.Buffers
         Memory<byte> GetMemory(int size);
 
         Memory<byte> GetMemory();
-#if (NETSTANDARD2_0)
-        ArraySegment<byte> Read(int bytes);
-#else
+
         Span<byte> Read(int bytes);
-#endif
 
         void WriteAdvance(int bytes);
 
@@ -74,7 +71,7 @@ namespace BeetleX.Buffers
 
         void Free();
 
-        BufferPool Pool { get; set; }
+        IBufferPool Pool { get; set; }
 
         bool TryWrite(Int16 value);
 
@@ -116,6 +113,7 @@ namespace BeetleX.Buffers
             set;
         }
 
+        Action<IBuffer> Completed { get; set; }
     }
 
     public class Buffer : IBuffer
@@ -176,7 +174,7 @@ namespace BeetleX.Buffers
 
         public IBuffer Next { get; set; }
 
-        public BufferPool Pool { get; set; }
+        public IBufferPool Pool { get; set; }
 
         public long ID => mID;
 
@@ -227,6 +225,7 @@ namespace BeetleX.Buffers
             }
             return false;
         }
+
         public Span<byte> GetSpan()
         {
             return mData.Span.Slice(mPostion, mFree);
@@ -266,24 +265,7 @@ namespace BeetleX.Buffers
             ReadAdvance(read);
             return read;
         }
-#if (NETSTANDARD2_0)
-        public ArraySegment<byte> Read(int bytes)
-        {
-            ArraySegment<byte> result;
-            int space = mLength - mPostion;
-            if (space > bytes)
-            {
-                result = new ArraySegment<byte>(Bytes, mPostion, bytes);
-                ReadAdvance(bytes);
-            }
-            else
-            {
-                result = new ArraySegment<byte>(Bytes, mPostion, space);
-                ReadAdvance(space);
-            }
-            return result;
-        }
-#else
+
         public Span<byte> Read(int bytes)
         {
             Span<byte> result;
@@ -300,9 +282,10 @@ namespace BeetleX.Buffers
             }
             return result;
         }
-#endif
 
         private int mUsing = 0;
+
+        private bool mDeleteTag = false;
 
         public void Reset()
         {
@@ -313,14 +296,50 @@ namespace BeetleX.Buffers
             System.Threading.Interlocked.Exchange(ref mUsing, 1);
 
         }
+        #region delete
 
+        internal long mLastActiveTime;
+
+        internal bool Unused
+        {
+            get
+            {
+                return mDeleteTag|| (mUsing == 1 && (TimeWatch.GetElapsedMilliseconds() - mLastActiveTime) > 1000 * BufferPool.BUFFER_FREE_TIMEOUT);
+            }
+        }
+
+        internal void Delete()
+        {
+            if (mDeleteTag || (System.Threading.Interlocked.CompareExchange(ref mUsing, -1, 1) == 1))
+            {
+                BufferMonitor.Free(mSize);
+                if (GCHandle.IsAllocated)
+                {
+                    GCHandle.Free();
+                }
+                Pool = null;
+                Next = null;
+            }
+        }
+        #endregion
 
         public void Free()
         {
             if (System.Threading.Interlocked.CompareExchange(ref mUsing, 0, 1) == 1)
             {
                 if (Pool != null)
-                    Pool.Push(this);
+                {
+                    var pool = Pool as BufferPool;
+                    if (pool.FreeStatusCount > 10 && pool.Count > BufferPool.POOL_MINI_SIZE)
+                    {
+                        mDeleteTag = true;
+                    }
+                    else
+                    {
+                        Pool.Push(this);
+                        mLastActiveTime = TimeWatch.GetElapsedMilliseconds();
+                    }
+                }
             }
 
         }
@@ -568,6 +587,8 @@ namespace BeetleX.Buffers
 
         public int FreeSpace => mFree;
 
+        public Action<IBuffer> Completed { get; set; }
+
         public int From(System.Net.Sockets.Socket socket)
         {
             int result = 0;
@@ -651,7 +672,8 @@ namespace BeetleX.Buffers
                     while (next != null)
                     {
                         Last = next;
-                        next = buffer.Next;
+                        //next = buffer.Next;
+                        next = next.Next;
                     }
                 }
             }

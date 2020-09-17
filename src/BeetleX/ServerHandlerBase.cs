@@ -48,9 +48,13 @@ namespace BeetleX
             OnLogToConsole(server, e);
         }
 
+        private object mLockConsole = new object();
+
+        public IServer Server { get; set; }
+
         protected virtual void OnLogToConsole(IServer server, ServerLogEventArgs e)
         {
-            lock (typeof(Console))
+            lock (mLockConsole)
             {
                 Console.Write($"[{ DateTime.Now.ToString("HH:mmm:ss")}] ");
                 switch (e.Type)
@@ -108,6 +112,9 @@ namespace BeetleX
 
         }
 
+        public virtual void Opened(IServer server)
+        {
 
+        }
     }
 }

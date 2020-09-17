@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
@@ -16,6 +17,8 @@ namespace BeetleX
 
         public string CertificateFile { get; set; }
 
+        public SslProtocols SslProtocols { get; set; } = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12;
+
         public string CertificatePassword { get; set; }
 
         public bool SyncAccept { get; set; } = true;
@@ -26,6 +29,8 @@ namespace BeetleX
 
         public IPEndPoint IPEndPoint { get; private set; }
 
+        public bool ReuseAddress { get; set; } = false;
+
         public IServer Server { get; internal set; }
 
         public X509Certificate2 Certificate { get; internal set; }
@@ -33,6 +38,8 @@ namespace BeetleX
         private SocketAsyncEventArgs mAcceptEventArgs = new SocketAsyncEventArgs();
 
         private Action<AcceptSocketInfo> mAcceptCallBack;
+
+        public Exception Error { get; set; }
 
         internal void Run(IServer server, Action<AcceptSocketInfo> acceptCallback)
         {
@@ -53,10 +60,12 @@ namespace BeetleX
                 try
                 {
                     Certificate = new X509Certificate2(CertificateFile, CertificatePassword);
-                    server.Log(EventArgs.LogType.Info, null, $"load ssl certificate {Certificate}");
+                    if (server.EnableLog(EventArgs.LogType.Info))
+                        server.Log(EventArgs.LogType.Info, null, $"load ssl certificate {Certificate}");
                 }
                 catch (Exception e_)
                 {
+                    Error = e_;
                     if (Server.EnableLog(EventArgs.LogType.Error))
                     {
                         Server.Log(EventArgs.LogType.Error, null, $"{Host}@{Port} enabled ssl load certificate file error {e_.Message}|{e_.StackTrace}!");
@@ -93,9 +102,14 @@ namespace BeetleX
                 {
                     Socket.DualMode = true;
                 }
+                if (this.ReuseAddress)
+                {
+                    Socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                }
                 Socket.Bind(IPEndPoint);
                 Socket.Listen(512 * 4);
-                Server.Log(EventArgs.LogType.Info, null, $"listen {Host}@{Port} success ssl:{SSL}");
+                if (Server.EnableLog(EventArgs.LogType.Info))
+                    Server.Log(EventArgs.LogType.Info, null, $"listen {Host}@{Port} success ssl:{SSL}");
                 if (SyncAccept)
                 {
                     System.Threading.ThreadPool.QueueUserWorkItem((o) => OnSyncAccept());
@@ -107,6 +121,7 @@ namespace BeetleX
             }
             catch (Exception e_)
             {
+                Error = e_;
                 if (Server.EnableLog(EventArgs.LogType.Error))
                 {
                     Server.Log(EventArgs.LogType.Error, null, $"listen {Host}@{Port} error {e_.Message}|{e_.StackTrace}!");
@@ -114,28 +129,39 @@ namespace BeetleX
             }
         }
 
+        private int mAccetpError = 0;
+
         private void OnSyncAccept()
         {
-            try
+            while (true)
             {
-                while (true)
+                try
                 {
+                    while (Server.Status == ServerStatus.Stop)
+                        System.Threading.Thread.Sleep(500);
                     var acceptSocket = Socket.Accept();
                     AcceptSocketInfo item = new AcceptSocketInfo();
                     item.Socket = acceptSocket;
                     item.Listen = this;
                     mAcceptCallBack(item);
                 }
-            }
-            catch (Exception e_)
-            {
-                if (Server.EnableLog(EventArgs.LogType.Error))
+                catch (Exception e_)
                 {
-                    Server.Log(EventArgs.LogType.Error, null, $"{Host}@{Port} accept error {e_.Message}|{e_.StackTrace}!");
-                }
-                if (Server.EnableLog(EventArgs.LogType.Warring))
-                {
-                    Server.Log(EventArgs.LogType.Error, null, $"{Host}@{Port} accept stoped!");
+                    Error = e_;
+                    mAccetpError++;
+                    if (Server.EnableLog(EventArgs.LogType.Error))
+                    {
+                        Server.Log(EventArgs.LogType.Error, null, $"{Host}@{Port} accept error {e_.Message}|{e_.StackTrace}!");
+                    }
+                    if (mAccetpError >= 10)
+                    {
+                        if (Server.EnableLog(EventArgs.LogType.Warring))
+                        {
+                            Server.Log(EventArgs.LogType.Error, null, $"{Host}@{Port} accept stoped!");
+                        }
+                        Server.Status = ServerStatus.Error;
+                        break;
+                    }
                 }
             }
         }
@@ -155,6 +181,7 @@ namespace BeetleX
                     item.Listen = this;
                     e.AcceptSocket = null;
                     mAcceptCallBack(item);
+                    mAccetpError = 0;
                 }
                 else
                 {
@@ -185,19 +212,19 @@ namespace BeetleX
             }
         }
 
-
-
         private int mAsyncAccepts = 0;
 
         private void OnAsyncAccept()
         {
+        START_ACCEPT:
             if (Server.EnableLog(EventArgs.LogType.Debug))
             {
                 Server.Log(EventArgs.LogType.Debug, null, $"{Host}@{Port} begin accept");
             }
             try
             {
-
+                while (Server.Status == ServerStatus.Stop)
+                    System.Threading.Thread.Sleep(500);
                 mAcceptEventArgs.AcceptSocket = null;
                 if (!Socket.AcceptAsync(mAcceptEventArgs))
                 {
@@ -208,22 +235,33 @@ namespace BeetleX
                 {
                     mAsyncAccepts = 0;
                 }
-
+                mAccetpError = 0;
             }
             catch (Exception e_)
             {
+                Error = e_;
+                mAccetpError++;
                 if (Server.EnableLog(EventArgs.LogType.Error))
                 {
                     Server.Log(EventArgs.LogType.Error, null, $"{Host}@{Port} accept error {e_.Message}|{e_.StackTrace}!");
                 }
-                if (Server.EnableLog(EventArgs.LogType.Warring))
+                if (mAccetpError >= 10)
                 {
-                    Server.Log(EventArgs.LogType.Error, null, $"{Host}@{Port} accept stoped!");
+                    if (Server.EnableLog(EventArgs.LogType.Warring))
+                    {
+                        Server.Log(EventArgs.LogType.Error, null, $"{Host}@{Port} accept stoped!");
+                    }
+                    Server.Status = ServerStatus.Error;
                 }
+                else
+                    goto START_ACCEPT;
             }
         }
 
-
+        public override string ToString()
+        {
+            return $"Listen {Host}:{Port}\t[SSL:{SSL}]\t[Status:{(Error == null ? "success" : $"error {Error.Message}")}]";
+        }
 
         public void Dispose()
         {
